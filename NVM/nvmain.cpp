@@ -147,7 +147,7 @@ void NVMain::SetConfig( Config *conf, std::string memoryName )
    */
   std::vector<std::string>& hookList = config->GetHooks( );
 
-  for( int i = 0; i < hookList.size( ); i++ )
+  for( size_t i = 0; i < hookList.size( ); i++ )
     {
       std::cout << "Creating hook " << hookList[i] << std::endl;
 
