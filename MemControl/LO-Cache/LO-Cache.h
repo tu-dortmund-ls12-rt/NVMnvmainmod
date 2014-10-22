@@ -63,6 +63,7 @@ class LO_Cache : public AbstractDRAMCache
     void SetMainMemory( NVMain *mm );
 
     bool IssueAtomic( NVMainRequest *req );
+    bool IsIssuable( NVMainRequest *request, FailReason *reason = NULL );
     bool IssueCommand( NVMainRequest *req );
     bool IssueFunctional( NVMainRequest *req );
     bool RequestComplete( NVMainRequest *req );
