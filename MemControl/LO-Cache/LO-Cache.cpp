@@ -48,8 +48,6 @@ using namespace NVM;
 
 LO_Cache::LO_Cache( )
 {
-    //decoder->GetTranslationMethod( )->SetOrder( 5, 1, 4, 3, 2, 6 );
-
     std::cout << "Created a Latency Optimized DRAM Cache!" << std::endl;
 
     drcQueueSize = 32;
@@ -63,6 +61,7 @@ LO_Cache::LO_Cache( )
     drc_miss = 0;
     drc_fills = 0;
     drc_evicts = 0;
+    drc_dirty_evicts = 0;
 
     rb_hits = 0;
     rb_miss = 0;
@@ -72,8 +71,6 @@ LO_Cache::LO_Cache( )
     max_addr = 0;
 
     psInterval = 0;
-
-    //memset( &hit_count, 0, sizeof(hit_count) );
 
     /*
     *  Queue options: One queue for all requests 
@@ -91,7 +88,7 @@ LO_Cache::~LO_Cache( )
 
 void LO_Cache::SetConfig( Config *conf, bool createChildren )
 {
-    ncounter_t rows;
+    ncounter_t rows, cols, word_size, lines;
 
     if( conf->KeyExists( "StarvationThreshold" ) )
         starvationThreshold = static_cast<ncounter_t>( conf->GetValue( "StarvationThreshold" ) );
@@ -105,6 +102,18 @@ void LO_Cache::SetConfig( Config *conf, bool createChildren )
     ranks = static_cast<ncounter_t>( conf->GetValue( "RANKS" ) );
     banks = static_cast<ncounter_t>( conf->GetValue( "BANKS" ) );
     rows  = static_cast<ncounter_t>( conf->GetValue( "ROWS" ) );
+    cols  = static_cast<ncounter_t>( conf->GetValue( "COLS" ) );
+
+    /*
+     * Calculate the memory word size under the default burst length.
+     * This will be the width of the bus multiplied by the number of
+     * beats (cycles * data rate) a request of the default bust length
+     * requires. Size BusWidth is in bits, divide by at after for bytes.
+     */
+    word_size = static_cast<ncounter_t>( conf->GetValue( "BusWidth" ) )
+              * static_cast<ncounter_t>( conf->GetValue( "RATE" ) )
+              * static_cast<ncounter_t>( conf->GetValue( "tBURST" ) );
+    word_size /= 8;
 
 
     functionalCache = new CacheBank**[ranks];
@@ -115,12 +124,15 @@ void LO_Cache::SetConfig( Config *conf, bool createChildren )
         for( ncounter_t j = 0; j < banks; j++ )
         {
             /*
+             *  The number of cache lines per row depends on the number
+             *  of columns: N = (cols word_size) / (8 tag bytes + 64 cache line bytes)
              *  The LO-Cache has the data tag (8 bytes) along with 64
              *  bytes for the cache line. The cache is direct mapped,
-             *  so we will have up to 28 cache lines + tags per row,
+             *  so we will have up to N cache lines + tags per row,
              *  an assoc of 1, and cache line size of 64 bytes.
              */
-            functionalCache[i][j] = new CacheBank( rows * 28, 1, 64 );
+            lines = (cols * word_size) / 72;
+            functionalCache[i][j] = new CacheBank( rows, lines, 1, 64 );
         }
     }
 
@@ -136,6 +148,7 @@ void LO_Cache::RegisterStats( )
     AddStat(drc_hitrate);
     AddStat(drc_fills);
     AddStat(drc_evicts);
+    AddStat(drc_dirty_evicts);
     AddStat(rb_hits);
     AddStat(rb_miss);
     AddStat(starvation_precharges);
@@ -186,14 +199,6 @@ bool LO_Cache::IssueAtomic( NVMainRequest *req )
 
         (void)functionalCache[rank][bank]->Install( req->address, dummy );
     }
-
-    //if( (req->address.GetPhysicalAddress()/64) < 64*1024*1024 )
-    //{
-    //    if( hit_count[req->address.GetPhysicalAddress()/64] < 255 )
-    //    {
-    //        hit_count[req->address.GetPhysicalAddress()/64]++;
-    //    }
-    //}
 
     return true;
 }
@@ -256,16 +261,12 @@ bool LO_Cache::IssueCommand( NVMainRequest *req )
 
         GetEventQueue()->InsertEvent( EventResponse, this, req, 
                                       GetEventQueue()->GetCurrentCycle()+1 );
-
-        //delete req;
     }
     else
     {
         Enqueue( 0, req );
     }
     
-    //std::cout << "LOC: New request for 0x" << std::hex << req->address.GetPhysicalAddress() << std::dec << std::endl;
-
     return rv;
 }
 
@@ -283,25 +284,52 @@ bool LO_Cache::RequestComplete( NVMainRequest *req )
         {
             /* Install the missed request */
             uint64_t rank, bank;
-            NVMDataBlock dummy;
+            NVMDataBlock vicData;
+            bool dirtyEvict = false;
+            NVMAddress victim;
 
             req->address.GetTranslatedAddress( NULL, NULL, &bank, &rank, NULL, NULL );
 
-            if( functionalCache[rank][bank]->SetFull( req->address ) )
+            if( functionalCache[rank][bank]->SetFull( req->address )
+                && !functionalCache[rank][bank]->Present( req->address ) )
             {
-                NVMAddress victim;
-
                 (void)functionalCache[rank][bank]->ChooseVictim( req->address, &victim );
-                (void)functionalCache[rank][bank]->Evict( victim, &dummy );
+                dirtyEvict = functionalCache[rank][bank]->Evict( victim, &vicData );
 
                 drc_evicts++;
             }
 
-            (void)functionalCache[rank][bank]->Install( req->address, dummy );
+            (void)functionalCache[rank][bank]->Install( req->address, req->data );
 
             drc_fills++;
 
-            //std::cout << "LOC: Filled request for 0x" << std::hex << req->address.GetPhysicalAddress() << std::dec << std::endl;
+            /* If we are replacing a dirty block we need to write back to main
+             * memory. We are assuming the DRC read miss contains the data and
+             * it is held somewhere while the new cache entry is fetched so
+             * that we do not need to re-issue a read request for the data.
+             */
+            if (dirtyEvict)
+            {
+                NVMainRequest *memReq = new NVMainRequest( );
+
+                memReq->address = victim;
+                memReq->owner = this;
+                memReq->tag = DRC_EVICT;
+                memReq->type = WRITE;
+                memReq->data = vicData;
+                memReq->arrivalCycle = GetEventQueue()->GetCurrentCycle();
+
+                if (mainMemory->IsIssuable( memReq, NULL )) {
+                    mainMemory->IssueCommand( memReq );
+                } else {
+                    /* If the request is not issuable to main memory we need to save the request
+                     * and issue it later in time, e.g., when a main memory request completes.
+                     * Otherwise, this request to main memory would be lost. */
+                    mainMemory->EnqueuePendingMemoryRequests( memReq );
+                }
+
+                drc_dirty_evicts++;
+            }
         }
         /*
          *  Intercept memory read requests from misses to create a fill request.
@@ -327,15 +355,11 @@ bool LO_Cache::RequestComplete( NVMainRequest *req )
 
             GetParent( )->RequestComplete( originalReq );
             rv = false;
-
-            //std::cout << "LOC: Mem Read completed for 0x" << std::hex << req->address.GetPhysicalAddress() << std::dec << std::endl;
-        }
-        else
-        {
-            // Unknown tag is a problem.
-            //assert( false );
         }
 
+        /* All other tag types (e.g., DRC_EVICT) only need to free memory
+         * used for the request and nothing else.
+         */
         delete req;
         rv = true;
     }
@@ -353,27 +377,52 @@ bool LO_Cache::RequestComplete( NVMainRequest *req )
             /*
              *  LOCache has no associativity -- Just replace whatever is in the set.
              */
-            NVMDataBlock dummy;
+            NVMDataBlock vicData;
+            bool dirtyEvict = false;
+            NVMAddress victim;
 
-            if( functionalCache[rank][bank]->SetFull( req->address ) )
+            if( functionalCache[rank][bank]->SetFull( req->address )
+                && !functionalCache[rank][bank]->Present( req->address ) )
             {
-                NVMAddress victim;
-
                 (void)functionalCache[rank][bank]->ChooseVictim( req->address, &victim );
-                (void)functionalCache[rank][bank]->Evict( victim, &dummy );
+                dirtyEvict = functionalCache[rank][bank]->Evict( victim, &vicData );
 
                 drc_evicts++;
             }
 
-            drc_hits++;
-
-            (void)functionalCache[rank][bank]->Install( req->address, dummy );
+            (void)functionalCache[rank][bank]->Install( req->address, req->data );
 
             /* Send back to requestor. */
             GetParent( )->RequestComplete( req );
             rv = false;
 
-            //std::cout << "LOC: Hit request for 0x" << std::hex << req->address.GetPhysicalAddress() << std::dec << std::endl;
+            /* If we are replacing a dirty block we need to write back to main
+             * memory. We are assuming the DRC read miss contains the data and
+             * it is held somewhere while the new cache entry is fetched so
+             * that we do not need to re-issue a read request for the data.
+             */
+            if (dirtyEvict)
+            {
+                NVMainRequest *memReq = new NVMainRequest( );
+
+                memReq->address = victim;
+                memReq->owner = this;
+                memReq->tag = DRC_EVICT;
+                memReq->type = WRITE;
+                memReq->data = vicData;
+                memReq->arrivalCycle = GetEventQueue()->GetCurrentCycle();
+
+                if (mainMemory->IsIssuable( memReq, NULL )) {
+                    mainMemory->IssueCommand( memReq );
+                } else {
+                    /* If the request is not issuable to main memory we need to save the request
+                     * and issue it later in time, e.g., when a main memory request completes.
+                     * Otherwise, this request to main memory would be lost. */
+                    mainMemory->EnqueuePendingMemoryRequests( memReq );
+                }
+
+                drc_dirty_evicts++;
+            }
         }
         else if( req->type == READ || req->type == READ_PRECHARGE )
         {
@@ -409,8 +458,6 @@ bool LO_Cache::RequestComplete( NVMainRequest *req )
                 }
 
                 drc_miss++;
-
-                //std::cout << "LOC: Missed request for 0x" << std::hex << req->address.GetPhysicalAddress() << std::dec << std::endl;
             }
             else
             {
@@ -419,22 +466,8 @@ bool LO_Cache::RequestComplete( NVMainRequest *req )
                 rv = false;
 
                 drc_hits++;
-
-                //std::cout << "LOC: Hit request for 0x" << std::hex << req->address.GetPhysicalAddress() << std::dec << std::endl;
             }
         }
-        else
-        {
-            //assert( false );
-        }
-
-        //if( (req->address.GetPhysicalAddress()/64) <= 64*1024*1024 )
-        //{
-        //    if( hit_count[req->address.GetPhysicalAddress()/64] < 255 )
-        //    {
-        //        hit_count[req->address.GetPhysicalAddress()/64]++;
-        //    }
-        //}
     }
 
     return rv;
@@ -473,8 +506,6 @@ void LO_Cache::Cycle( ncycle_t steps )
     /* Issue the commands for this transaction. */
     if( nextRequest != NULL )
     {
-        //std::cout << "LOC: Enqueueing request for 0x" << std::hex << nextRequest->address.GetPhysicalAddress() << std::dec << std::endl;
-
         IssueMemoryCommands( nextRequest );
     }
 
