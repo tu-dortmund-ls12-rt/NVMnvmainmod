@@ -45,7 +45,6 @@
 #ifndef __MEM_NVMAIN_MEM_HH__
 #define __MEM_NVMAIN_MEM_HH__
 
-
 #include <fstream>
 #include <ostream>
 
@@ -64,51 +63,44 @@
 #include "src/SimInterface.h"
 #include "src/TagGenerator.h"
 
-class NVMainMemory : public AbstractMemory, public NVM::NVMObject
-{
-  private:
-
-    class MemoryPort : public SlavePort
-    {
+class NVMainMemory : public AbstractMemory, public NVM::NVMObject {
+   private:
+    class MemoryPort : public SlavePort {
         friend class NVMainMemory;
 
-        NVMainMemory& memory;
-        NVMainMemory& forgdb;
+        NVMainMemory &memory;
+        NVMainMemory &forgdb;
 
-      public:
+       public:
+        MemoryPort(const std::string &_name, NVMainMemory &_memory);
 
-        MemoryPort(const std::string& _name, NVMainMemory& _memory);
-
-      protected:
-
+       protected:
         Tick recvAtomic(PacketPtr pkt);
 
         void recvFunctional(PacketPtr pkt);
 
         bool recvTimingReq(PacketPtr pkt);
 
-        void recvRetry( );
-        void recvRespRetry( );
+        void recvRetry();
+        void recvRespRetry();
 
         AddrRangeList getAddrRanges() const;
-
     };
 
     void tick();
-    void SendResponses( );
+    void SendResponses();
     EventWrapper<NVMainMemory, &NVMainMemory::tick> clockEvent;
     EventWrapper<NVMainMemory, &NVMainMemory::SendResponses> respondEvent;
 
-    void CheckDrainState( );
-    void ScheduleResponse( );
-    void ScheduleClockEvent( Tick );
+    void CheckDrainState();
+    void ScheduleResponse();
+    void ScheduleClockEvent(Tick);
     void SetRequestData(NVM::NVMainRequest *request, PacketPtr pkt);
 
-    class NVMainStatPrinter : public Callback
-    {
+    class NVMainStatPrinter : public Callback {
         friend class NVMainMemory;
 
-      public:
+       public:
         NVMainMemory *memory;
         NVMainMemory *forgdb;
 
@@ -118,16 +110,14 @@ class NVMainMemory : public AbstractMemory, public NVM::NVMObject
         std::ofstream statStream;
     };
 
-    class NVMainStatReseter : public Callback
-    {
-      public:
+    class NVMainStatReseter : public Callback {
+       public:
         void process();
 
         NVM::NVMain *nvmainPtr;
     };
 
-    struct NVMainMemoryRequest
-    {
+    struct NVMainMemoryRequest {
         PacketPtr packet;
         NVM::NVMainRequest *request;
         Tick issueTick;
@@ -167,28 +157,24 @@ class NVMainMemory : public AbstractMemory, public NVM::NVMObject
 
     uint64_t m_requests_outstanding;
 
-  public:
-
+   public:
     typedef NVMainMemoryParams Params;
     NVMainMemory(const Params *p);
     virtual ~NVMainMemory();
 
-    BaseSlavePort& getSlavePort(const std::string& if_name,
+    BaseSlavePort &getSlavePort(const std::string &if_name,
                                 PortID idx = InvalidPortID);
     void init();
     void startup();
     void wakeup();
 
-    const Params *
-    params() const
-    {
+    const Params *params() const {
         return dynamic_cast<const Params *>(_params);
     }
 
+    bool RequestComplete(NVM::NVMainRequest *req);
 
-    bool RequestComplete( NVM::NVMainRequest *req );
-
-    void Cycle(NVM::ncycle_t) { }
+    void Cycle(NVM::ncycle_t) {}
 
     DrainState drain() override;
 
@@ -204,13 +190,10 @@ class NVMainMemory : public AbstractMemory, public NVM::NVMObject
     std::vector<PacketPtr> pendingDelete;
     std::map<NVM::NVMainRequest *, NVMainMemoryRequest *> m_request_map;
 
-  protected:
-
+   protected:
     Tick doAtomicAccess(PacketPtr pkt);
     void doFunctionalAccess(PacketPtr pkt);
     void recvRetry();
-
 };
 
 #endif
-

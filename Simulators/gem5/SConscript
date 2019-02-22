@@ -35,9 +35,11 @@ if 'TARGET_ISA' in env and not 'NVMAIN_BUILD' in env:
     env.Append(CPPPATH=Dir('.'))
 
     Source('nvmain_mem.cc')
+    Source('nvmain_write_pmu.cc')
 
     DebugFlag('NVMain')
     DebugFlag('NVMainMin')
 
     SimObject('NVMainMemory.py')
+    SimObject('NVMainWritePMU.py')
 
