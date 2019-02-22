@@ -301,7 +301,7 @@ NVMainMemory::SetRequestData(NVMainRequest *request, PacketPtr pkt)
 
     if (pkt->isRead())
     {
-        Request *dataReq = new Request(pkt->getAddr(), pkt->getSize(), 0, Request::funcMasterId);
+        std::shared_ptr<Request> dataReq = std::shared_ptr<Request> (new Request(pkt->getAddr(), pkt->getSize(), 0, Request::funcMasterId));
         Packet *dataPkt = new Packet(dataReq, MemCmd::ReadReq);
         dataPkt->allocate();
         doFunctionalAccess(dataPkt);
@@ -316,12 +316,12 @@ NVMainMemory::SetRequestData(NVMainRequest *request, PacketPtr pkt)
         }
 
         delete dataPkt;
-        delete dataReq;
+        // delete dataReq;
         delete [] hostAddr;
     }
     else
     {
-        Request *dataReq = new Request(pkt->getAddr(), pkt->getSize(), 0, Request::funcMasterId);
+        std::shared_ptr<Request> dataReq = std::shared_ptr<Request> (new Request(pkt->getAddr(), pkt->getSize(), 0, Request::funcMasterId));
         Packet *dataPkt = new Packet(dataReq, MemCmd::ReadReq);
         dataPkt->allocate();
         doFunctionalAccess(dataPkt);
@@ -339,7 +339,7 @@ NVMainMemory::SetRequestData(NVMainRequest *request, PacketPtr pkt)
         }
 
         delete dataPkt;
-        delete dataReq;
+        // delete dataReq;
         delete [] hostAddrT;
         delete [] hostAddr;
     }
@@ -411,7 +411,7 @@ NVMainMemory::MemoryPort::recvFunctional(PacketPtr pkt)
 
     for( std::deque<PacketPtr>::iterator i = memory.responseQueue.begin();
          i != memory.responseQueue.end(); ++i )
-        pkt->checkFunctional(*i);
+        pkt->trySatisfyFunctional(*i);
 
     pkt->popLabel();
 }
