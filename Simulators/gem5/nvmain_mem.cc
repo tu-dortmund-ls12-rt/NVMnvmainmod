@@ -52,6 +52,7 @@
 #include "debug/NVMain.hh"
 #include "debug/NVMainMin.hh"
 #include "nvmain_write_pmu.hh"
+#include "nvmain_read_pmu.hh"
 
 using namespace NVM;
 
@@ -353,6 +354,11 @@ Tick NVMainMemory::MemoryPort::recvAtomic(PacketPtr pkt) {
                 Nvmain_Write_PMU::instance->triggerWrite();
             }
         }
+        if(pkt->isRead()){
+            if(Nvmain_Read_PMU::instance != 0){
+                Nvmain_Read_PMU::instance->triggerRead();
+            }
+        }
 
         /* initialize the request so that NVMain can correctly serve it */
         request->access = UNKNOWN_ACCESS;
@@ -433,6 +439,11 @@ bool NVMainMemory::MemoryPort::recvTimingReq(PacketPtr pkt) {
     if(pkt->isWrite()){
             if(Nvmain_Write_PMU::instance != 0){
                 Nvmain_Write_PMU::instance->triggerWrite();
+            }
+        }
+    if(pkt->isRead()){
+            if(Nvmain_Read_PMU::instance != 0){
+                Nvmain_Read_PMU::instance->triggerRead();
             }
         }
 
