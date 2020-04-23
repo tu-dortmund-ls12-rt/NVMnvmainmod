@@ -356,6 +356,7 @@ void NVMain::PrintPreTrace( NVMainRequest *request )
         TraceLine tl;
 
         tl.SetLine( request->address,
+        request->programCounter,
                     request->type,
                     GetEventQueue( )->GetCurrentCycle( ),
                     request->data,
